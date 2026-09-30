@@ -7,6 +7,7 @@ Runs on the keyword adapter by default; set OPENAI_API_KEY for real vision.
 import json
 import os
 import re
+import time
 import uuid
 import urllib.error
 import urllib.request
@@ -52,14 +53,23 @@ def match(text, top_n=3):
     scored.sort(key=lambda p: p[1], reverse=True)
     return scored[:top_n]
 
+FIRE_SIGNS = {_stem(w) for w in ("scorch", "scorched", "charring", "charred", "melted", "melting", "sparking", "sparks", "smoke")}
+ELECTRIC_CTX = {_stem(w) for w in ("outlet", "socket", "wiring", "wire", "breaker", "switch", "plug", "electrical", "circuit")}
+
+
+def safety_override(text):
+    """Visible fire/electrical damage always escalates to the pro-only
+    electrical guide, whatever any matcher prefers."""
+    words = _words(text)
+    if words & FIRE_SIGNS and words & ELECTRIC_CTX:
+        return BY_ID["tripping-breaker"]
+    return None
+
+
 def diagnose(notes):
-    words = _words(notes)
-    # Safety override: visible fire/electrical damage always escalates to the
-    # pro-only electrical guide, whatever the keyword matcher prefers.
-    fire_signs = {_stem(w) for w in ("scorch", "scorched", "charring", "charred", "melted", "melting", "sparking", "sparks", "smoke")}
-    electric_ctx = {_stem(w) for w in ("outlet", "socket", "wiring", "wire", "breaker", "switch", "plug", "electrical", "circuit")}
-    if words & fire_signs and words & electric_ctx:
-        return BY_ID["tripping-breaker"], 0.62, []
+    override = safety_override(notes)
+    if override is not None:
+        return override, 0.62, []
     matches = match(notes)
     if not matches:
         return None, 0.0, ["What room is the problem in?", "What do you see, hear, or smell?", "When did it start, and is it getting worse?"]
@@ -70,16 +80,39 @@ def diagnose(notes):
 VISION_MODEL = os.environ.get("FIXSNAP_VISION_MODEL", "gpt-4o-mini")
 
 
-def vision_describe(notes, image_url=None, image_base64=None, mime_type="image/jpeg"):
+GUIDE_CHOICES = "\n".join("- " + g["id"] + ": " + g["title"] for g in GUIDES)
+
+
+def _parse_vision(text):
+    t = (text or "").strip()
+    body = t
+    if body.startswith("```"):
+        body = body.strip("`")
+        if body.lower().startswith("json"):
+            body = body[4:]
+    try:
+        obj = json.loads(body)
+        desc = str(obj.get("description") or "").strip()
+        gid = str(obj.get("guide_id") or "").strip()
+        return (desc or None), (gid if gid in BY_ID else None)
+    except Exception:
+        pass
+    m = re.search(r'"guide_id"\s*:\s*"([^"]+)"', t)
+    gid = m.group(1) if m and m.group(1) in BY_ID else None
+    return (t or None), gid
+
+
+def vision_analyze(notes, image_url=None, image_base64=None, mime_type="image/jpeg"):
     """Read the photo with a vision model when OPENAI_API_KEY is set.
 
-    Returns a short plain-language description of the visible problem, or None
-    to fall back to keyword matching. Never raises: no key, a bad image, or an
-    API error all just return None.
+    Returns (description, guide_id): a plain-language description of the
+    visible problem and the model's best-matching guide id from the library
+    (or None). Never raises: no key, a bad image, or an API error all return
+    (None, None) so the caller falls back to keyword matching.
     """
     key = os.environ.get("OPENAI_API_KEY")
     if not key or not (image_url or image_base64):
-        return None
+        return None, None
     if image_base64:
         url = image_base64
         if not url.startswith("data:"):
@@ -88,9 +121,12 @@ def vision_describe(notes, image_url=None, image_base64=None, mime_type="image/j
         url = image_url
     prompt = (
         "You are the vision module of FixSnap, a home-repair assistant. "
-        "Look at this photo and describe, in 2-4 plain sentences, the home problem visible: "
-        "which fixture or area it is, visible symptoms (water, stains, rust, damage, leaks, scorching), "
-        "and any safety hazard. Use simple symptom words a repair guide would use."
+        "Look at this photo. First describe, in 2-3 plain sentences, the home problem visible: "
+        "which fixture or area it is, visible symptoms, and any safety hazard. "
+        "Then choose the single best-matching repair guide from this list, by its id:\n"
+        + GUIDE_CHOICES
+        + "\nIf none of the guides fit, use \"none\". "
+        "Respond with ONLY a JSON object: {\"description\": \"...\", \"guide_id\": \"...\"}."
         + ((" The user added these notes: " + notes) if notes else "")
     )
     payload = {
@@ -104,7 +140,8 @@ def vision_describe(notes, image_url=None, image_base64=None, mime_type="image/j
                 ],
             }
         ],
-        "max_tokens": 220,
+        "max_tokens": 300,
+        "temperature": 0,
     }
     req = urllib.request.Request(
         "https://api.openai.com/v1/chat/completions",
@@ -112,16 +149,20 @@ def vision_describe(notes, image_url=None, image_base64=None, mime_type="image/j
         headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},
         method="POST",
     )
-    for _attempt in range(2):
+    for attempt in range(3):
         try:
             with urllib.request.urlopen(req, timeout=40) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
             text = (data["choices"][0]["message"]["content"] or "").strip()
             if text:
-                return text
+                desc, gid = _parse_vision(text)
+                if desc:
+                    return desc, gid
         except Exception:
             pass
-    return None
+        if attempt < 2:
+            time.sleep(1.5 * (attempt + 1))
+    return None, None
 
 
 mcp = FastMCP(
@@ -139,9 +180,16 @@ OUTCOMES = "/tmp/outcomes.jsonl"  # ephemeral on Spaces; use a DB for production
 @mcp.tool
 def diagnose_home_problem(notes: str = "", room: str = "", image_url: str | None = None, image_base64: str | None = None, mime_type: str = "image/jpeg") -> dict:
     """Diagnose a home problem from a photo and/or written notes."""
-    vision_text = vision_describe(notes, image_url, image_base64, mime_type)
+    vision_text, vision_gid = vision_analyze(notes, image_url, image_base64, mime_type)
     combined = ((vision_text or "") + " " + (notes or "")).strip()
     guide, conf, questions = diagnose(combined)
+    if vision_gid and safety_override(combined) is None:
+        # The vision model's own library pick beats the keyword matcher,
+        # unless the electrical-fire safety override already fired.
+        keywords = match(combined)
+        guide = BY_ID[vision_gid]
+        conf = 0.8 if keywords and keywords[0][0]["id"] == vision_gid else 0.66
+        questions = []
     scan_id = uuid.uuid4().hex[:12]
     if guide is None:
         observed = ("Photo analysis: " + vision_text) if vision_text else "No symptoms described that match the guide library."
