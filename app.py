@@ -53,7 +53,7 @@ def match(text, top_n=3):
     scored.sort(key=lambda p: p[1], reverse=True)
     return scored[:top_n]
 
-FIRE_SIGNS = {_stem(w) for w in ("scorch", "scorched", "charring", "charred", "melted", "melting", "sparking", "sparks", "smoke")}
+FIRE_SIGNS = {_stem(w) for w in ("scorch", "scorched", "charring", "charred", "melted", "melting", "sparking", "sparks", "smoke", "burn", "burned", "burnt", "burning", "blackened")}
 ELECTRIC_CTX = {_stem(w) for w in ("outlet", "socket", "wiring", "wire", "breaker", "switch", "plug", "electrical", "circuit")}
 
 
@@ -125,7 +125,9 @@ def vision_analyze(notes, image_url=None, image_base64=None, mime_type="image/jp
         "which fixture or area it is, visible symptoms, and any safety hazard. "
         "Then choose the single best-matching repair guide from this list, by its id:\n"
         + GUIDE_CHOICES
-        + "\nIf none of the guides fit, use \"none\". "
+        + "\nChoose the guide that matches the visible PROBLEM or symptom, not just an object that appears in the photo. "
+        "If you see burn marks, scorching, melting, or sparking on any electrical item, choose tripping-breaker. "
+        "If the problem is not clearly one of the listed guides, use \"none\" - do not pick the closest-sounding match. "
         "Respond with ONLY a JSON object: {\"description\": \"...\", \"guide_id\": \"...\"}."
         + ((" The user added these notes: " + notes) if notes else "")
     )
@@ -190,6 +192,10 @@ def diagnose_home_problem(notes: str = "", room: str = "", image_url: str | None
         guide = BY_ID[vision_gid]
         conf = 0.8 if keywords and keywords[0][0]["id"] == vision_gid else 0.66
         questions = []
+    elif vision_text and conf < 0.7 and safety_override(combined) is None:
+        # The vision model saw the photo and picked no guide. Trust that
+        # abstention over a weak keyword guess: honest no-match wins.
+        guide, conf, questions = None, 0.0, ["What room is the problem in?", "What do you see, hear, or smell?", "When did it start, and is it getting worse?"]
     scan_id = uuid.uuid4().hex[:12]
     if guide is None:
         observed = ("Photo analysis: " + vision_text) if vision_text else "No symptoms described that match the guide library."
