@@ -53,6 +53,13 @@ def match(text, top_n=3):
     return scored[:top_n]
 
 def diagnose(notes):
+    words = _words(notes)
+    # Safety override: visible fire/electrical damage always escalates to the
+    # pro-only electrical guide, whatever the keyword matcher prefers.
+    fire_signs = {_stem(w) for w in ("scorch", "scorched", "charring", "charred", "melted", "melting", "sparking", "sparks", "smoke")}
+    electric_ctx = {_stem(w) for w in ("outlet", "socket", "wiring", "wire", "breaker", "switch", "plug", "electrical", "circuit")}
+    if words & fire_signs and words & electric_ctx:
+        return BY_ID["tripping-breaker"], 0.62, []
     matches = match(notes)
     if not matches:
         return None, 0.0, ["What room is the problem in?", "What do you see, hear, or smell?", "When did it start, and is it getting worse?"]
@@ -105,13 +112,16 @@ def vision_describe(notes, image_url=None, image_base64=None, mime_type="image/j
         headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(req, timeout=40) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        text = (data["choices"][0]["message"]["content"] or "").strip()
-        return text or None
-    except Exception:
-        return None
+    for _attempt in range(2):
+        try:
+            with urllib.request.urlopen(req, timeout=40) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            text = (data["choices"][0]["message"]["content"] or "").strip()
+            if text:
+                return text
+        except Exception:
+            pass
+    return None
 
 
 mcp = FastMCP(
