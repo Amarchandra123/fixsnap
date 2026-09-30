@@ -80,7 +80,10 @@ def diagnose(notes):
 VISION_MODEL = os.environ.get("FIXSNAP_VISION_MODEL", "gpt-4o-mini")
 
 
-GUIDE_CHOICES = "\n".join("- " + g["id"] + ": " + g["title"] for g in GUIDES)
+GUIDE_CHOICES = "\n".join(
+    "- " + g["id"] + ": " + g["title"] + " (what it looks like: " + "; ".join(g.get("symptoms", [])[:2]) + ")"
+    for g in GUIDES
+)
 
 
 def _parse_vision(text):
@@ -192,7 +195,7 @@ def diagnose_home_problem(notes: str = "", room: str = "", image_url: str | None
         guide = BY_ID[vision_gid]
         conf = 0.8 if keywords and keywords[0][0]["id"] == vision_gid else 0.66
         questions = []
-    elif vision_text and conf < 0.7 and safety_override(combined) is None:
+    elif vision_text and conf < 0.55 and safety_override(combined) is None:
         # The vision model saw the photo and picked no guide. Trust that
         # abstention over a weak keyword guess: honest no-match wins.
         guide, conf, questions = None, 0.0, ["What room is the problem in?", "What do you see, hear, or smell?", "When did it start, and is it getting worse?"]
