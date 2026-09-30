@@ -8,6 +8,8 @@ import json
 import os
 import re
 import uuid
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 
 # Disable FastMCP's PyPI version check on startup (can abort in sandbox/prod).
@@ -43,6 +45,60 @@ def diagnose(notes):
     conf = round(min(0.35 + s * 0.5, 0.85), 3)
     return g, conf, (g.get("clarifying_questions", [])[:3] if conf < 0.5 else [])
 
+VISION_MODEL = os.environ.get("FIXSNAP_VISION_MODEL", "gpt-4o-mini")
+
+
+def vision_describe(notes, image_url=None, image_base64=None, mime_type="image/jpeg"):
+    """Read the photo with a vision model when OPENAI_API_KEY is set.
+
+    Returns a short plain-language description of the visible problem, or None
+    to fall back to keyword matching. Never raises: no key, a bad image, or an
+    API error all just return None.
+    """
+    key = os.environ.get("OPENAI_API_KEY")
+    if not key or not (image_url or image_base64):
+        return None
+    if image_base64:
+        url = image_base64
+        if not url.startswith("data:"):
+            url = "data:" + (mime_type or "image/jpeg") + ";base64," + url
+    else:
+        url = image_url
+    prompt = (
+        "You are the vision module of FixSnap, a home-repair assistant. "
+        "Look at this photo and describe, in 2-4 plain sentences, the home problem visible: "
+        "which fixture or area it is, visible symptoms (water, stains, rust, damage, leaks, scorching), "
+        "and any safety hazard. Use simple symptom words a repair guide would use."
+        + ((" The user added these notes: " + notes) if notes else "")
+    )
+    payload = {
+        "model": VISION_MODEL,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": url}},
+                ],
+            }
+        ],
+        "max_tokens": 220,
+    }
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=40) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        text = (data["choices"][0]["message"]["content"] or "").strip()
+        return text or None
+    except Exception:
+        return None
+
+
 mcp = FastMCP(
     name="FixSnap",
     instructions=(
@@ -58,18 +114,27 @@ OUTCOMES = "/tmp/outcomes.jsonl"  # ephemeral on Spaces; use a DB for production
 @mcp.tool
 def diagnose_home_problem(notes: str, room: str = "", image_url: str | None = None, image_base64: str | None = None, mime_type: str = "image/jpeg") -> dict:
     """Diagnose a home problem from a photo and/or written notes."""
-    guide, conf, questions = diagnose(notes)
+    vision_text = vision_describe(notes, image_url, image_base64, mime_type)
+    combined = ((vision_text or "") + " " + (notes or "")).strip()
+    guide, conf, questions = diagnose(combined)
     scan_id = uuid.uuid4().hex[:12]
     if guide is None:
+        observed = ("Photo analysis: " + vision_text) if vision_text else "No symptoms described that match the guide library."
         return {"scan_id": scan_id, "likely_issue": None, "guide_id": None, "confidence": 0.0,
                 "severity": "unknown", "can_diy_fix": False, "safety_warnings": [],
-                "observed": "No symptoms described that match the guide library.",
+                "observed": observed,
                 "clarifying_questions": questions,
                 "next_step": "Answer the clarifying questions, then call diagnose_home_problem again."}
+    if vision_text:
+        observed = "Photo analysis: " + vision_text
+    elif image_url or image_base64:
+        observed = "Matched '" + guide["title"] + "' from described symptoms and the uploaded photo (demo mode: photo not machine-read)."
+    else:
+        observed = "Matched '" + guide["title"] + "' from described symptoms."
     return {"scan_id": scan_id, "likely_issue": guide["title"], "guide_id": guide["id"],
             "confidence": conf, "severity": guide["severity"], "can_diy_fix": guide["can_diy_fix"],
             "safety_warnings": guide.get("safety_warnings", []),
-            "observed": "Matched '" + guide["title"] + "' from described symptoms" + (" and the uploaded photo (demo mode: photo not machine-read)." if (image_url or image_base64) else "."),
+            "observed": observed,
             "likely_causes": guide.get("likely_causes", [])[:4],
             "clarifying_questions": questions,
             "next_step": "Call get_fix_guide with this guide_id for the step-by-step repair, or estimate_costs for DIY vs pro pricing."}
