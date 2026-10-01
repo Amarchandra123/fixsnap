@@ -86,6 +86,21 @@ def safety_override(text):
     return None
 
 
+GAS_CTX = {_stem(w) for w in ("smell", "leak", "leaking", "stove", "line", "pipe", "hiss", "hissing", "rotten", "egg", "odor", "odour")}
+
+
+def gas_hazard(text):
+    """A possible gas leak or carbon-monoxide hazard is an emergency:
+    pro-only, never a DIY guide, whatever any matcher prefers."""
+    words = _words(text)
+    if "carbon" in words and "monoxide" in words:
+        return True
+    if "rotten" in words and "egg" in words:
+        # Rotten-egg smell is the classic gas-leak warning sign (mercaptan).
+        return True
+    return _stem("gas") in words and bool(words & GAS_CTX)
+
+
 def diagnose(notes):
     override = safety_override(notes)
     if override is not None:
@@ -285,6 +300,20 @@ def diagnose_home_problem(notes: str = "", room: str = "", image_url: str | None
     """Diagnose a home problem from a photo and/or written notes."""
     vision_text, vision_gid = vision_analyze(notes, image_url, image_base64, mime_type)
     combined = ((vision_text or "") + " " + (notes or "")).strip()
+    if gas_hazard(combined):
+        # Possible gas leak / CO hazard: emergency escalation only. Never
+        # return a DIY guide for this, whatever the matcher prefers.
+        return {"scan_id": uuid.uuid4().hex[:12],
+                "likely_issue": "Possible gas leak or carbon monoxide hazard",
+                "guide_id": None, "confidence": 0.95,
+                "severity": "emergency", "can_diy_fix": False,
+                "safety_warnings": [
+                    "If the smell is strong, leave the home immediately and do not touch electrical switches, flames, or appliances.",
+                    "From outside, call your gas utility's emergency line or 911.",
+                    "Never attempt to repair a gas line yourself - licensed professional only."],
+                "observed": "Gas hazard detected in the description. FixSnap does not provide DIY gas repair.",
+                "clarifying_questions": [],
+                "next_step": "Leave the area and call your gas utility's emergency line or 911 from outside."}
     guide, conf, questions = diagnose(combined)
     if vision_gid and safety_override(combined) is None:
         # The vision model's own library pick beats the keyword matcher,
