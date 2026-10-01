@@ -293,10 +293,16 @@ def diagnose_home_problem(notes: str = "", room: str = "", image_url: str | None
         guide = BY_ID[vision_gid]
         conf = 0.8 if keywords and keywords[0][0]["id"] == vision_gid else 0.66
         questions = []
-    elif vision_text and conf < 0.55 and safety_override(combined) is None:
-        # The vision model saw the photo and picked no guide. Trust that
-        # abstention over a weak keyword guess: honest no-match wins.
-        guide, conf, questions = None, 0.0, ["What room is the problem in?", "What do you see, hear, or smell?", "When did it start, and is it getting worse?"]
+    elif vision_text and (image_url or image_base64) and safety_override(combined) is None:
+        # The vision model read the photo and picked no guide. Trust that
+        # abstention: the photo description alone must not be keyword-matched
+        # into a forced diagnosis (a cracked tile floor is not drywall).
+        # The user's own notes may still carry a diagnosis on their own.
+        note_guide, note_conf, note_questions = diagnose(notes or "")
+        if note_guide is not None and note_conf >= 0.55:
+            guide, conf, questions = note_guide, note_conf, note_questions
+        else:
+            guide, conf, questions = None, 0.0, ["What room is the problem in?", "What do you see, hear, or smell?", "When did it start, and is it getting worse?"]
     scan_id = uuid.uuid4().hex[:12]
     if guide is None:
         observed = ("Photo analysis: " + vision_text) if vision_text else "No symptoms described that match the guide library."
