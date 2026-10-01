@@ -14,7 +14,7 @@ FixSnap has no accounts, no sign-in, and no advertising.
 
 ## How it is used
 
-- Photos are analyzed by a vision AI model to describe the visible problem, which is then matched against FixSnap's curated repair-guide library.
+- Photos are analyzed by a vision AI model (Google Gemini primary; OpenAI as fallback) to describe the visible problem, which is then matched against FixSnap's curated repair-guide library.
 - Notes and the photo description are used only to produce your diagnosis, repair guide, and cost estimate.
 - If you report back whether a fix worked, that outcome (with a random scan ID) is kept to improve the guides. It is not linked to your identity.
 
@@ -27,7 +27,8 @@ FixSnap has no accounts, no sign-in, and no advertising.
 
 ## Third parties involved
 
-- **OpenAI** — photos are sent to OpenAI's API for image analysis and handled under OpenAI's API data policies.
+- **Google Gemini** — photos are sent to Google's Gemini API for image analysis (primary vision provider) and handled under Google's API data policies.
+- **OpenAI** — if the primary vision provider is unavailable, photos may be sent to OpenAI's API for image analysis and handled under OpenAI's API data policies.
 - **Render** — the FixSnap server runs on Render hosting; standard server logs (timestamps, request paths) may be retained by the host.
 - **ChatGPT** — your conversation itself lives in your ChatGPT account under OpenAI's terms.
 
