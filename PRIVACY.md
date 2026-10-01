@@ -32,6 +32,19 @@ FixSnap has no accounts, no sign-in, and no advertising.
 - **Render** — the FixSnap server runs on Render hosting; standard server logs (timestamps, request paths) may be retained by the host.
 - **ChatGPT** — your conversation itself lives in your ChatGPT account under OpenAI's terms.
 
+## Retention
+
+- Uploaded photos are processed in transit and are **not** written to disk or retained after the diagnosis is returned.
+- Written notes are used to produce your diagnosis and are not retained as an identified record.
+- If you log whether a fix worked, that outcome is stored with a random scan ID to improve guide accuracy; it carries no name, account, or contact information.
+- Hosting providers may keep standard technical server logs (timestamps, request paths, IP address) for security and operations for a limited period.
+
+## Your choices and controls
+
+- You choose what to send: a photo, notes, or both. FixSnap works with notes alone if you'd rather not share a photo.
+- Because outcomes are stored only under a random scan ID, include that scan ID if you email us and we will delete the associated outcome record.
+- For any privacy question or deletion request, contact **amarchandra0625@gmail.com**.
+
 ## Safety note
 
 FixSnap provides estimates and general repair guidance, not professional advice. For gas, electrical hazards, or structural damage, contact a licensed professional. In an emergency, call your local emergency number.
